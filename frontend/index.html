@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TruthCheck</title>
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#4CAF50">
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #121212;
+      color: white;
+      text-align: center;
+      padding: 20px;
+    }
+    textarea {
+      width: 90%;
+      height: 100px;
+      border-radius: 8px;
+      padding: 10px;
+      font-size: 16px;
+    }
+    button {
+      margin-top: 15px;
+      padding: 12px 24px;
+      font-size: 16px;
+      background: #4CAF50;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+    #result {
+      margin-top: 20px;
+      font-size: 20px;
+    }
+    #sources {
+      margin-top: 25px;
+      text-align: left;
+      max-width: 500px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+    .source-item {
+      background: #1e1e1e;
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 10px;
+      font-size: 14px;
+    }
+    .source-item a {
+      color: #4CAF50;
+      text-decoration: none;
+      word-break: break-all;
+    }
+    .source-item a:hover {
+      text-decoration: underline;
+    }
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      margin-left: 6px;
+    }
+    .badge-trusted {
+      background: #2e7d32;
+    }
+    .badge-stance-true {
+      background: #1565c0;
+    }
+    .badge-stance-false {
+      background: #c62828;
+    }
+  </style>
+</head>
+<body>
+  <h1>TruthCheck</h1>
+  <p>Paste a claim, caption, or text to verify</p>
+  <textarea id="claimInput" placeholder="Paste text here..."></textarea>
+  <br>
+  <button onclick="checkClaim()">Verify</button>
+  <div id="result"></div>
+  <div id="sources"></div>
+
+  <script>
+    window.onload = function() {
+      const params = new URLSearchParams(window.location.search);
+      const sharedText = params.get("text") || params.get("url") || params.get("title");
+      if (sharedText) {
+        document.getElementById("claimInput").value = sharedText;
+      }
+    };
+
+    async function checkClaim() {
+      const text = document.getElementById("claimInput").value;
+      document.getElementById("result").innerText = "Checking...";
+      document.getElementById("sources").innerHTML = "";
+
+      const response = await fetch("http://10.25.130.239:8000/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: text })
+      });
+
+      const data = await response.json();
+      document.getElementById("result").innerText =
+        data.verdict + " (Score: " + data.score + ")";
+
+      renderSources(data.sources || []);
+    }
+
+    function getDomainName(url) {
+      try {
+        const hostname = new URL(url).hostname;
+        return hostname.replace("www.", "");
+      } catch (e) {
+        return "unknown source";
+      }
+    }
+
+    function renderSources(sources) {
+      const container = document.getElementById("sources");
+      if (sources.length === 0) {
+        return;
+      }
+
+      let html = "<h3>Sources checked</h3>";
+      sources.forEach((src) => {
+        const domain = getDomainName(src.link);
+        let attribution = `According to <strong>${domain}</strong>`;
+        if (src.trusted) {
+          attribution += ' <span class="badge badge-trusted">Trusted</span>';
+        }
+
+        let stanceText = "";
+        if (src.stance === "true") {
+          stanceText = '<span class="badge badge-stance-true">Supports claim</span>';
+        } else if (src.stance === "false") {
+          stanceText = '<span class="badge badge-stance-false">Contradicts claim</span>';
+        }
+
+        html += `
+          <div class="source-item">
+            <div>${attribution} ${stanceText}</div>
+            <a href="${src.link}" target="_blank">${src.title}</a>
+          </div>
+        `;
+      });
+
+      container.innerHTML = html;
+    }
+  </script>
+
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('sw.js');
+    }
+  </script>
+</body>
+</html>

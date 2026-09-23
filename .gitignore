@@ -1,0 +1,25 @@
+# Secrets -- NEVER commit
+.env
+*.env
+
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Generated / downloaded media (large, regenerable, not source)
+backend/frames/
+backend/test_video.mp4.mkv
+backend/*.mp4
+backend/*.mkv
+backend/*.mp3
+backend/control_fake.jpg
+backend/control_real.jpg
+backend/_tmp_*/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/

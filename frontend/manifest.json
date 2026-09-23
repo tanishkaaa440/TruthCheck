@@ -1,0 +1,30 @@
+{
+  "name": "TruthCheck",
+  "short_name": "TruthCheck",
+  "description": "AI-powered misinformation checker",
+  "start_url": "https://catty-jalapeno-radio.ngrok-free.dev/index.html",
+  "display": "standalone",
+  "background_color": "#121212",
+  "theme_color": "#4CAF50",
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ],
+  "share_target": {
+    "action": "https://catty-jalapeno-radio.ngrok-free.dev/index.html",
+    "method": "GET",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url"
+    }
+  }
+}
