@@ -8,12 +8,26 @@ HF_API_KEY = os.getenv("HF_API_KEY")
 HF_MODEL_URL = "https://router.huggingface.co/hf-inference/models/facebook/bart-large-mnli"
 
 TRUSTED_DOMAINS = [
+    # International news / science
     "nasa.gov", "who.int", "cdc.gov", "gov.in", "wikipedia.org",
     "bbc.com", "reuters.com", "apnews.com", "nature.com",
     "sciencedirect.com", "ncbi.nlm.nih.gov", "britannica.com",
     "nationalgeographic.com", "space.com", "livescience.com",
-    "snopes.com", "factcheck.org", "politifact.com", "scientificamerican.com",
-    "esa.int", "noaa.gov", "usgs.gov", "un.org"
+    "scientificamerican.com", "esa.int", "noaa.gov", "usgs.gov", "un.org",
+
+    # International fact-checking (IFCN-certified)
+    "snopes.com", "factcheck.org", "politifact.com", "fullfact.org",
+    "factcheck.afp.com", "africacheck.org", "poynter.org",
+
+    # South Asia -- India (IFCN-certified / established outlets)
+    "boomlive.in", "factchecker.in", "factcrescendo.com", "factly.in",
+    "vishvasnews.com", "newschecker.in", "thequint.com", "altnews.in",
+
+    # South Asia -- Pakistan (IFCN-certified / established outlets)
+    "sochfactcheck.com", "dawn.com", "geo.tv",
+
+    # South Asia -- Bangladesh / Nepal
+    "tbsnews.net", "southasiacheck.org",
 ]
 
 GREEN = "\U0001F7E2"
@@ -75,9 +89,13 @@ def calculate_trust_score(search_results: dict, claim: str = "") -> dict:
     true_weight = 0
     false_weight = 0
     trusted_count = 0
+    true_count = 0
+    false_count = 0
     sources = []
 
-    for item in organic[:5]:
+    TOP_N = 10  # increased from 5 -- search now returns more merged results
+
+    for item in organic[:TOP_N]:
         link = item.get("link", "")
         title = item.get("title", "")
         snippet = item.get("snippet", "")
@@ -92,8 +110,10 @@ def calculate_trust_score(search_results: dict, claim: str = "") -> dict:
             trusted_count += 1
         if stance == "true":
             true_weight += confidence * weight_multiplier
+            true_count += 1
         elif stance == "false":
             false_weight += confidence * weight_multiplier
+            false_count += 1
 
         sources.append({
             "title": title,
@@ -103,16 +123,29 @@ def calculate_trust_score(search_results: dict, claim: str = "") -> dict:
             "confidence": round(confidence, 2)
         })
 
-    total_checked = min(len(organic), 5)
+    total_checked = min(len(organic), TOP_N)
     trust_ratio = (trusted_count / total_checked) if total_checked else 0
 
-    if false_weight > true_weight and false_weight >= 0.55:
-        score = max(0, 20 - int(false_weight * 15))
+    # Average rather than sum -- prevents several weak/borderline signals from
+    # stacking up past a single strong one. Bug found: previously summed
+    # confidence across all sources unboundedly, letting 5 weak untrusted
+    # "true" calls (~0.6 each) blow past the 100 cap on their own.
+    avg_true = (true_weight / true_count) if true_count else 0
+    avg_false = (false_weight / false_count) if false_count else 0
+
+    if avg_false > avg_true and avg_false >= 0.55:
+        score = max(0, 20 - int(avg_false * 15))
         verdict = f"{RED} Red Flag (likely false claim)"
-    elif true_weight > false_weight and true_weight >= 0.55:
-        score = min(100, 65 + int(true_weight * 20) + int(trust_ratio * 15))
-        verdict = f"{GREEN} Verified"
-    elif true_weight > 0 and false_weight > 0:
+    elif avg_true > avg_false and avg_true >= 0.55:
+        if trusted_count == 0:
+            # No trusted source backs this -- cap well below "Verified"
+            # regardless of how confident the stance model was.
+            score = min(50, 30 + int(avg_true * 15))
+            verdict = f"{YELLOW} Unverified (no trusted sources found)"
+        else:
+            score = min(100, 65 + int(avg_true * 20) + int(trust_ratio * 15))
+            verdict = f"{GREEN} Verified"
+    elif avg_true > 0 and avg_false > 0:
         score = 40 + int(trust_ratio * 15)
         verdict = f"{YELLOW} Unverified (mixed signals)"
     else:

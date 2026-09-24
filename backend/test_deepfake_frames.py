@@ -5,7 +5,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-HF_API_KEY = os.getenv("HF_API_KEY")MODEL = "prithivMLmods/Deep-Fake-Detector-v2-Model"
+HF_API_KEY = os.getenv("HF_API_KEY")
+MODEL = "prithivMLmods/Deep-Fake-Detector-v2-Model"
 API_URL = f"https://router.huggingface.co/hf-inference/models/{MODEL}"
 HEADERS = {"Authorization": f"Bearer {HF_API_KEY}"}
 

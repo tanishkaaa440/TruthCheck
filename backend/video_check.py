@@ -22,6 +22,12 @@ WHISPER_MODEL_URL = "https://router.huggingface.co/hf-inference/models/openai/wh
 
 FRAME_SAMPLE_EVERY = 5  # matches confirmed-working sampling rate from testing
 
+# Below this length, a clip is far more likely to be a snippet cut from a
+# longer video rather than a complete, self-contained piece of footage --
+# a very common way real footage gets used to spread misinformation
+# (true clip, missing context that would change its meaning).
+SHORT_CLIP_THRESHOLD_SEC = 25
+
 
 def _download_video(url, workdir):
     output_path = os.path.join(workdir, "video.mp4")
@@ -33,13 +39,48 @@ def _download_video(url, workdir):
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
-        # yt-dlp appends the real container extension (e.g. .mkv) -- find actual file
-        # rather than assuming output_path is exact (known gotcha from manual testing).
-        base = os.path.splitext(output_path)[0]
         for f in os.listdir(workdir):
             if f.startswith("video."):
                 return os.path.join(workdir, f)
     raise FileNotFoundError("Downloaded video file not found after yt-dlp run")
+
+
+def _get_duration_sec(video_path):
+    cap = cv2.VideoCapture(video_path)
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30
+    frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0
+    cap.release()
+    if fps <= 0:
+        return None
+    return frame_count / fps
+
+
+def _analyze_context_risk(duration_sec):
+    """
+    Heuristic flag for 'edited / cut out of context' videos.
+    NOTE: this is a duration-based heuristic, not true context verification
+    (which would require reverse video search against the original source --
+    a separate, larger feature). It flags the *pattern* common to
+    out-of-context clips so a human reviewer knows to look closer,
+    it does not claim to prove the video was manipulated.
+    """
+    if duration_sec is None:
+        return {"status": "error", "message": "Could not determine video duration"}
+
+    is_short = duration_sec < SHORT_CLIP_THRESHOLD_SEC
+
+    return {
+        "duration_sec": round(duration_sec, 1),
+        "flag": "possible_out_of_context_clip" if is_short else "normal_length",
+        "note": (
+            f"Clip is under {SHORT_CLIP_THRESHOLD_SEC}s -- short isolated clips are "
+            "commonly used to spread misinformation by stripping away context that "
+            "would change how a statement is understood. Recommend checking for the "
+            "original, full-length source before trusting this clip alone."
+            if is_short else
+            "Clip length is not unusually short on its own."
+        )
+    }
 
 
 def _extract_frames(video_path, workdir, interval_sec=2):
@@ -88,8 +129,6 @@ def _analyze_frames(frame_paths):
     variance = sum((s - avg) ** 2 for s in scores) / len(scores)
     std_dev = variance ** 0.5
 
-    # NOTE: absolute % is not well-calibrated (see calibration testing) --
-    # flag based on variance/consistency instead, per validated approach.
     flag = "high_variance_suspicious" if std_dev > 0.15 else "consistent_low_risk"
 
     return {
@@ -123,14 +162,19 @@ def _extract_and_transcribe_audio(video_path, workdir):
 
 def process_video(url):
     """
-    Full Phase 7 pipeline: download -> frame deepfake analysis + audio transcription
-    -> feed transcript into existing claim fact-check pipeline -> combined verdict.
+    Full video verification pipeline, covering three misinformation patterns:
+      1. General false-claim spreading -- transcript fed into fact-check pipeline
+      2. AI-generated / deepfake video -- frame-level variance analysis
+      3. Edited / clipped out-of-context video -- duration-based heuristic flag
     """
     workdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"_tmp_{uuid.uuid4().hex[:8]}")
     os.makedirs(workdir, exist_ok=True)
 
     try:
         video_path = _download_video(url, workdir)
+
+        duration_sec = _get_duration_sec(video_path)
+        context_risk = _analyze_context_risk(duration_sec)
 
         frame_paths = _extract_frames(video_path, workdir)
         deepfake_result = _analyze_frames(frame_paths)
@@ -146,8 +190,8 @@ def process_video(url):
             "video_url": url,
             "transcript": transcript,
             "deepfake_analysis": deepfake_result,
+            "context_risk": context_risk,
             "claim_verdict": claim_result,
         }
     finally:
-        # Clean up temp files -- avoid repeating the earlier disk-space issue
         shutil.rmtree(workdir, ignore_errors=True)
