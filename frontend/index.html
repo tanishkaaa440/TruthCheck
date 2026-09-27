@@ -35,6 +35,44 @@
       margin-top: 20px;
       font-size: 20px;
     }
+    #videoAnalysis {
+      margin-top: 20px;
+      text-align: left;
+      max-width: 500px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+    .analysis-card {
+      background: #1e1e1e;
+      border-radius: 8px;
+      padding: 14px;
+      margin-bottom: 10px;
+      font-size: 14px;
+    }
+    .analysis-card h4 {
+      margin: 0 0 8px 0;
+      font-size: 15px;
+    }
+    .flag-low { color: #66bb6a; }
+    .flag-high { color: #ef5350; }
+    .transcript-box {
+      background: #1a1a1a;
+      border-radius: 8px;
+      padding: 12px;
+      margin-top: 10px;
+      font-size: 13px;
+      max-height: 150px;
+      overflow-y: auto;
+      text-align: left;
+    }
+    .comment-item {
+      padding: 8px 0;
+      border-bottom: 1px solid #2a2a2a;
+      font-size: 13px;
+    }
+    .comment-item:last-child {
+      border-bottom: none;
+    }
     #sources {
       margin-top: 25px;
       text-align: left;
@@ -77,14 +115,18 @@
 </head>
 <body>
   <h1>TruthCheck</h1>
-  <p>Paste a claim, caption, or text to verify</p>
-  <textarea id="claimInput" placeholder="Paste text here..."></textarea>
+  <p>Paste a claim, caption, or video link to verify</p>
+  <textarea id="claimInput" placeholder="Paste text or a video URL here..."></textarea>
   <br>
   <button onclick="checkClaim()">Verify</button>
   <div id="result"></div>
+  <div id="videoAnalysis"></div>
   <div id="sources"></div>
 
   <script>
+    // Same host as the existing /verify calls -- update if your ngrok/IP changes.
+    const API_BASE = "http://10.25.130.239:8000";
+
     window.onload = function() {
       const params = new URLSearchParams(window.location.search);
       const sharedText = params.get("text") || params.get("url") || params.get("title");
@@ -93,12 +135,27 @@
       }
     };
 
+    // Matches youtube.com/watch, youtu.be/, and youtube.com/shorts/ links.
+    function isVideoUrl(text) {
+      const trimmed = text.trim();
+      return /^(https?:\/\/)?(www\.)?(youtube\.com\/(watch\?v=|shorts\/)|youtu\.be\/)/i.test(trimmed);
+    }
+
     async function checkClaim() {
       const text = document.getElementById("claimInput").value;
       document.getElementById("result").innerText = "Checking...";
+      document.getElementById("videoAnalysis").innerHTML = "";
       document.getElementById("sources").innerHTML = "";
 
-      const response = await fetch("http://10.25.130.239:8000/verify", {
+      if (isVideoUrl(text)) {
+        await checkVideo(text.trim());
+      } else {
+        await checkText(text);
+      }
+    }
+
+    async function checkText(text) {
+      const response = await fetch(`${API_BASE}/verify`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: text })
@@ -109,6 +166,123 @@
         data.verdict + " (Score: " + data.score + ")";
 
       renderSources(data.sources || []);
+    }
+
+    async function checkVideo(url) {
+      document.getElementById("result").innerText =
+        "Analyzing video -- this can take 30-90 seconds...";
+
+      try {
+        const response = await fetch(`${API_BASE}/verify-video`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: url })
+        });
+
+        if (!response.ok) {
+          document.getElementById("result").innerText =
+            "Error analyzing video (status " + response.status + ")";
+          return;
+        }
+
+        const data = await response.json();
+        renderVideoResult(data);
+      } catch (e) {
+        document.getElementById("result").innerText =
+          "Could not reach the backend. Is it running?";
+      }
+    }
+
+    function renderVideoResult(data) {
+      const claimVerdict = data.claim_verdict;
+      if (claimVerdict) {
+        document.getElementById("result").innerText =
+          claimVerdict.verdict + " (Score: " + claimVerdict.score + ")";
+      } else {
+        document.getElementById("result").innerText =
+          "No spoken claim could be checked in this video.";
+      }
+
+      let html = "";
+
+      // Video title + caption
+      if (data.title) {
+        html += `
+          <div class="analysis-card">
+            <h4>${escapeHtml(data.title)}</h4>
+            ${data.description ? `<div>${escapeHtml(data.description)}</div>` : ""}
+          </div>
+        `;
+      }
+
+      // Deepfake / AI-generation analysis
+      const df = data.deepfake_analysis;
+      if (df && df.status === "ok") {
+        const flagClass = df.flag === "high_variance_suspicious" ? "flag-high" : "flag-low";
+        const flagText = df.flag === "high_variance_suspicious"
+          ? "Inconsistent across frames -- worth a closer look"
+          : "Consistent across frames -- lower AI-manipulation risk";
+        html += `
+          <div class="analysis-card">
+            <h4>AI-Generation Check</h4>
+            <div class="${flagClass}">${flagText}</div>
+            <div>Frames analyzed: ${df.frames_analyzed}</div>
+          </div>
+        `;
+      }
+
+      // Edited / out-of-context clip check
+      const ctx = data.context_risk;
+      if (ctx && ctx.duration_sec !== undefined) {
+        const flagClass = ctx.flag === "possible_out_of_context_clip" ? "flag-high" : "flag-low";
+        html += `
+          <div class="analysis-card">
+            <h4>Context Check</h4>
+            <div class="${flagClass}">${ctx.note}</div>
+            <div>Duration: ${ctx.duration_sec}s</div>
+          </div>
+        `;
+      }
+
+      // Transcript
+      if (data.transcript) {
+        html += `
+          <div class="analysis-card">
+            <h4>Transcript</h4>
+            <div class="transcript-box">${escapeHtml(data.transcript)}</div>
+          </div>
+        `;
+      }
+
+      // Top comments -- often contain real-time community fact-checking
+      if (data.comments && data.comments.length > 0) {
+        let commentsHtml = data.comments
+          .slice(0, 8)
+          .map(c => `
+            <div class="comment-item">
+              <strong>${escapeHtml(c.author)}</strong> (${c.likes} likes)<br>
+              ${escapeHtml(c.text)}
+            </div>
+          `).join("");
+        html += `
+          <div class="analysis-card">
+            <h4>Top Comments</h4>
+            <div class="transcript-box">${commentsHtml}</div>
+          </div>
+        `;
+      }
+
+      document.getElementById("videoAnalysis").innerHTML = html;
+
+      if (claimVerdict) {
+        renderSources(claimVerdict.sources || []);
+      }
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement("div");
+      div.textContent = text;
+      return div.innerHTML;
     }
 
     function getDomainName(url) {
