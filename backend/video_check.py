@@ -36,13 +36,43 @@ def _download_video(url, workdir):
         "format": "bestvideo[vcodec^=avc1][height<=480]+bestaudio/best[height<=480]",
         "ffmpeg_location": FFMPEG_PATH,
         "quiet": True,
+        # Pull top comments too, capped for speed -- [max_total, max_parents,
+        # max_replies, max_replies_per_thread]. 15 top-level, sorted by likes.
+        "getcomments": True,
+        "extractor_args": {
+            "youtube": {"comment_sort": ["top"], "max_comments": ["15", "15", "0", "0"]}
+        },
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
+
+        video_path = None
         for f in os.listdir(workdir):
             if f.startswith("video."):
-                return os.path.join(workdir, f)
-    raise FileNotFoundError("Downloaded video file not found after yt-dlp run")
+                video_path = os.path.join(workdir, f)
+                break
+        if not video_path:
+            raise FileNotFoundError("Downloaded video file not found after yt-dlp run")
+
+        title = info.get("title", "")
+        description = info.get("description", "")
+
+        raw_comments = info.get("comments") or []
+        comments = [
+            {
+                "text": c.get("text", ""),
+                "author": c.get("author", ""),
+                "likes": c.get("like_count", 0),
+            }
+            for c in raw_comments[:15]
+        ]
+
+        return {
+            "video_path": video_path,
+            "title": title,
+            "description": description,
+            "comments": comments,
+        }
 
 
 def _get_duration_sec(video_path):
@@ -163,15 +193,18 @@ def _extract_and_transcribe_audio(video_path, workdir):
 def process_video(url):
     """
     Full video verification pipeline, covering three misinformation patterns:
-      1. General false-claim spreading -- transcript fed into fact-check pipeline
+      1. General false-claim spreading -- transcript + caption fed into fact-check pipeline
       2. AI-generated / deepfake video -- frame-level variance analysis
       3. Edited / clipped out-of-context video -- duration-based heuristic flag
+    Also pulls title, description/caption, and top comments so the response
+    reflects the full context around the video, not just the raw footage.
     """
     workdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"_tmp_{uuid.uuid4().hex[:8]}")
     os.makedirs(workdir, exist_ok=True)
 
     try:
-        video_path = _download_video(url, workdir)
+        video_info = _download_video(url, workdir)
+        video_path = video_info["video_path"]
 
         duration_sec = _get_duration_sec(video_path)
         context_risk = _analyze_context_risk(duration_sec)
@@ -181,13 +214,29 @@ def process_video(url):
 
         transcript = _extract_and_transcribe_audio(video_path, workdir)
 
-        claim_result = None
+        # Combine caption (title + description) with the spoken transcript --
+        # captions often state the explicit claim more clearly than the
+        # audio does (e.g. "BREAKING: X did Y" in a caption vs a vaguer
+        # spoken clip), so checking both gives a more complete picture.
+        claim_text_parts = []
+        if video_info["title"]:
+            claim_text_parts.append(video_info["title"])
+        if video_info["description"]:
+            claim_text_parts.append(video_info["description"])
         if transcript:
-            search_results = search_claim(transcript)
-            claim_result = calculate_trust_score(search_results, transcript)
+            claim_text_parts.append(transcript)
+        combined_claim_text = " ".join(claim_text_parts).strip()
+
+        claim_result = None
+        if combined_claim_text:
+            search_results = search_claim(combined_claim_text)
+            claim_result = calculate_trust_score(search_results, combined_claim_text)
 
         return {
             "video_url": url,
+            "title": video_info["title"],
+            "description": video_info["description"],
+            "comments": video_info["comments"],
             "transcript": transcript,
             "deepfake_analysis": deepfake_result,
             "context_risk": context_risk,
