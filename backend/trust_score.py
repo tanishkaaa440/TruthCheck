@@ -1,5 +1,6 @@
 import os
 import requests
+from urllib.parse import urlparse
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -14,6 +15,13 @@ TRUSTED_DOMAINS = [
     "sciencedirect.com", "ncbi.nlm.nih.gov", "britannica.com",
     "nationalgeographic.com", "space.com", "livescience.com",
     "scientificamerican.com", "esa.int", "noaa.gov", "usgs.gov", "un.org",
+
+    # Major international news outlets (previously missing)
+    "cnn.com", "nytimes.com", "theguardian.com", "npr.org",
+    "aljazeera.com", "washingtonpost.com", "wsj.com", "economist.com",
+    "ft.com", "bloomberg.com", "time.com", "usatoday.com",
+    "abcnews.go.com", "cbsnews.com", "nbcnews.com", "pbs.org",
+    "dw.com", "france24.com", "skynews.com",
 
     # International fact-checking (IFCN-certified)
     "snopes.com", "factcheck.org", "politifact.com", "fullfact.org",
@@ -30,12 +38,56 @@ TRUSTED_DOMAINS = [
     "tbsnews.net", "southasiacheck.org",
 ]
 
+# Official broadcaster / government channel names -- when a youtube.com result's
+# title contains one of these, treat it as strong evidence the story is
+# genuinely covered by an official source, not just "some video exists".
+# Matched against the result title since youtube.com itself isn't a trust
+# signal on its own (anyone can upload there).
+OFFICIAL_YOUTUBE_PUBLISHERS = [
+    # International
+    "BBC News", "BBC World", "Al Jazeera English", "Reuters", "AP",
+    "Associated Press", "CNN", "DW News", "France 24", "NBC News",
+    "CBS News", "ABC News", "Sky News", "CNA",
+
+    # South Asia -- Pakistan
+    "Dawn News", "Geo News", "ARY News", "Samaa TV", "Hum News",
+    "Express News", "92 News", "Bol News", "Dunya News",
+
+    # South Asia -- India
+    "NDTV", "India Today", "ANI", "PTI", "The Quint", "The Wire",
+
+    # Official government / international bodies
+    "United Nations", "WHO", "PTV News", "PID Pakistan",
+]
+
 GREEN = "\U0001F7E2"
 YELLOW = "\U0001F7E1"
 RED = "\U0001F534"
+WHITE = "\u26AA"  # "unable to verify" -- distinct from Red Flag, means no
+                  # signal either way, not "this looks false"
 
-def is_trusted(link: str) -> bool:
-    return any(domain in link for domain in TRUSTED_DOMAINS)
+# Generic official-government suffixes -- checked against the actual domain
+# (netloc), not a substring of the whole URL, so "mygovernment-scam.com"
+# can never match. Covers .gov, .mil, and country-code government variants
+# like .gov.uk, .gov.pk, .gov.in without needing to hardcode every single
+# government website by name (the earlier bug: war.gov wasn't in the list).
+GOV_SUFFIXES = (".gov", ".mil", ".gov.uk", ".gov.in", ".gov.pk", ".gov.au", ".gov.ca")
+
+def is_trusted(link: str, title: str = "") -> bool:
+    if any(domain in link for domain in TRUSTED_DOMAINS):
+        return True
+
+    try:
+        netloc = urlparse(link).netloc.lower()
+    except Exception:
+        netloc = ""
+    if netloc and any(netloc == suf.lstrip(".") or netloc.endswith(suf) for suf in GOV_SUFFIXES):
+        return True
+
+    if "youtube.com" in link and title:
+        title_lower = title.lower()
+        return any(pub.lower() in title_lower for pub in OFFICIAL_YOUTUBE_PUBLISHERS)
+    return False
 
 def check_stance_ai(claim: str, snippet: str) -> tuple:
     if not snippet or not HF_API_KEY:
@@ -84,7 +136,7 @@ def check_stance_ai(claim: str, snippet: str) -> tuple:
 def calculate_trust_score(search_results: dict, claim: str = "") -> dict:
     organic = search_results.get("organic", [])
     if not organic:
-        return {"score": 0, "verdict": f"{RED} Red Flag", "sources": []}
+        return {"score": 0, "verdict": f"{WHITE} Unable to verify (no sources found)", "sources": []}
 
     true_weight = 0
     false_weight = 0
@@ -101,7 +153,7 @@ def calculate_trust_score(search_results: dict, claim: str = "") -> dict:
         snippet = item.get("snippet", "")
         combined_text = f"{title}. {snippet}"
 
-        trusted = is_trusted(link)
+        trusted = is_trusted(link, title)
         stance, confidence = check_stance_ai(claim, combined_text) if claim else ("neutral", 0)
 
         weight_multiplier = 2 if trusted else 1
@@ -148,6 +200,19 @@ def calculate_trust_score(search_results: dict, claim: str = "") -> dict:
     elif avg_true > 0 and avg_false > 0:
         score = 40 + int(trust_ratio * 15)
         verdict = f"{YELLOW} Unverified (mixed signals)"
+    elif true_count == 0 and false_count == 0:
+        # Bug fixed: every source came back neutral (no stance model matched
+        # true or false strongly). This is NOT the same as "likely false" --
+        # it just means no source explicitly confirmed or contradicted the
+        # specific claim wording. Previously this fell through to the same
+        # scoring as a real red flag, which wrongly implied "looks false"
+        # for things like accurately-transcribed neutral news coverage.
+        if trusted_count > 0:
+            score = 40 + int(trust_ratio * 20)
+            verdict = f"{YELLOW} Covered by sources, but no explicit confirmation found"
+        else:
+            score = 25
+            verdict = f"{WHITE} Unable to verify (no clear signal from available sources)"
     else:
         score = int(trust_ratio * 100)
         if score >= 60:

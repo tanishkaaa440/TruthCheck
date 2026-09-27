@@ -18,19 +18,23 @@ def _serper_search(query, num=20):
 
 def search_claim(query):
     """
-    Runs two searches and merges results:
+    Runs three searches and merges results:
     1. The claim as-is (broad coverage)
     2. The claim + 'fact check' (biased toward finding actual fact-checkers)
+    3. The claim + 'site:youtube.com' (biased toward finding official video
+       coverage of the same story -- checked against known broadcaster/
+       government channel names in trust_score.py)
     Deduplicates by link. Increases both volume and quality of sources
     reaching trust_score.py, instead of relying on a single 10-result query.
     """
     primary = _serper_search(query, num=20)
     factcheck_biased = _serper_search(f"{query} fact check", num=20)
+    youtube_biased = _serper_search(f"{query} site:youtube.com", num=10)
 
     seen_links = set()
     merged_organic = []
 
-    for result_set in (primary, factcheck_biased):
+    for result_set in (primary, factcheck_biased, youtube_biased):
         for item in result_set.get("organic", []):
             link = item.get("link", "")
             if link and link not in seen_links:

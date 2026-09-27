@@ -2,7 +2,7 @@ import requests
 import json
 
 URL = "http://localhost:8000/verify-video"
-TEST_VIDEO = "https://www.youtube.com/watch?v=HlVPNg5jPRA"
+TEST_VIDEO = "https://www.youtube.com/shorts/UP21RWCxSHw"
 
 print(f"Sending request to {URL} ...")
 print("This can take 30-60+ seconds (download + frame analysis + transcription + fact-check).")
